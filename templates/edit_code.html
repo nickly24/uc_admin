@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+
+{% block title %}Редактировать код - Админка UC Bot{% endblock %}
+
+{% block content %}
+<div class="form-page">
+    <h2>Редактировать код</h2>
+    <p>Таблица: <strong>{{ table }}</strong></p>
+    <p>ID: <strong>{{ code.id }}</strong></p>
+    
+    <form method="POST" action="{{ url_for('edit_code', code_id=code.id, table=table) }}" class="code-form">
+        <div class="form-group">
+            <label for="val">Количество UC:</label>
+            <select id="val" name="val" required>
+                {% for uc_val in uc_values %}
+                    <option value="{{ uc_val }}" {% if code.val == uc_val %}selected{% endif %}>{{ uc_val }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        
+        <div class="form-group">
+            <label for="code">Код:</label>
+            <input type="text" id="code" name="code" value="{{ code.code }}" required autofocus>
+        </div>
+        
+        <div class="form-actions">
+            <button type="submit" class="btn btn-success">Сохранить</button>
+            <a href="{{ url_for('codes', table=table) }}" class="btn btn-secondary">Отмена</a>
+        </div>
+    </form>
+</div>
+{% endblock %}

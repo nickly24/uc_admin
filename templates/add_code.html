@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+
+{% block title %}Добавить код - Админка UC Bot{% endblock %}
+
+{% block content %}
+<div class="form-page">
+    <h2>Добавить код</h2>
+    <p>Таблица: <strong>{{ table }}</strong></p>
+    
+    <form method="POST" action="{{ url_for('add_code') }}" class="code-form">
+        <input type="hidden" name="table" value="{{ table }}">
+        
+        <div class="form-group">
+            <label for="val">Количество UC:</label>
+            <select id="val" name="val" required>
+                <option value="">Выберите значение UC</option>
+                {% for uc_val in uc_values %}
+                    <option value="{{ uc_val }}">{{ uc_val }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        
+        <div class="form-group">
+            <label for="code">Код:</label>
+            <input type="text" id="code" name="code" required autofocus placeholder="Введите код">
+        </div>
+        
+        <div class="form-actions">
+            <button type="submit" class="btn btn-success">Добавить</button>
+            <a href="{{ url_for('codes', table=table) }}" class="btn btn-secondary">Отмена</a>
+        </div>
+    </form>
+</div>
+{% endblock %}

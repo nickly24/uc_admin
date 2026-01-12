@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+
+{% block title %}Главная - Админка UC Bot{% endblock %}
+
+{% block content %}
+<div class="dashboard">
+    <h2>Добро пожаловать в админку UC Bot</h2>
+    
+    <div class="stats-grid">
+        <div class="stat-card">
+            <h3>Коды</h3>
+            <a href="{{ url_for('codes', table='codes') }}" class="btn btn-primary">Управление кодами</a>
+        </div>
+        <div class="stat-card">
+            <h3>Использованные коды</h3>
+            <a href="{{ url_for('codes', table='used_codes') }}" class="btn btn-primary">Просмотр</a>
+        </div>
+        <div class="stat-card">
+            <h3>Отданные коды</h3>
+            <a href="{{ url_for('codes', table='given_codes') }}" class="btn btn-primary">Просмотр</a>
+        </div>
+        <div class="stat-card">
+            <h3>История операций</h3>
+            <a href="{{ url_for('history') }}" class="btn btn-primary">Просмотр истории</a>
+        </div>
+    </div>
+</div>
+{% endblock %}
