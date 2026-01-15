@@ -3,9 +3,66 @@ import mysql.connector
 from mysql.connector import Error
 from datetime import datetime
 import functools
+import os
+import threading
+
+import telebot
+from telebot import types
 
 app = Flask(__name__)
 app.secret_key = 'ucbot_secret_key_2026'  # Секретный ключ для сессий
+
+BOT_TOKEN = "8331847785:AAEOrkhCGwwDPsDsodZpGOespnrNQZuJ6-8"
+MINI_APP_URL = "https://nickly24-uc3-ad1c.twc1.net/"
+SUPPORT_URL = "https://t.me/MISS_uc_manager"
+WELCOME_TEXT = (
+    "Добро пожаловать в бот пополнений MISS UC!\n"
+    "Нажмите кнопку ниже, чтобы открыть мини-приложение, "
+    "или обратитесь в поддержку."
+)
+FALLBACK_TEXT = "Пожалуйста, обратитесь в поддержку: https://t.me/MISS_uc_manager"
+BANNER_PATH = os.path.join(os.path.dirname(__file__), "banner.jpg")
+
+
+def start_bot() -> None:
+    if not BOT_TOKEN or BOT_TOKEN == "PASTE_BOT_TOKEN_HERE":
+        raise ValueError("Укажите токен бота в BOT_TOKEN в admin/main.py")
+
+    bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
+
+    @bot.message_handler(commands=["start"])
+    def handle_start(message: types.Message) -> None:
+        keyboard = types.InlineKeyboardMarkup(row_width=1)
+        keyboard.add(
+            types.InlineKeyboardButton(
+                text="Открыть приложение",
+                web_app=types.WebAppInfo(url=MINI_APP_URL),
+            ),
+            types.InlineKeyboardButton(text="Поддержка", url=SUPPORT_URL),
+        )
+
+        try:
+            with open(BANNER_PATH, "rb") as photo:
+                bot.send_photo(
+                    message.chat.id,
+                    photo=photo,
+                    caption=WELCOME_TEXT,
+                    reply_markup=keyboard,
+                )
+        except FileNotFoundError:
+            bot.send_message(
+                message.chat.id,
+                WELCOME_TEXT,
+                reply_markup=keyboard,
+            )
+
+    @bot.message_handler(func=lambda msg: True, content_types=["text"])
+    def handle_other_messages(message: types.Message) -> None:
+        if message.text and message.text.strip().startswith("/start"):
+            return
+        bot.send_message(message.chat.id, FALLBACK_TEXT)
+
+    bot.infinity_polling()
 
 # Параметры подключения к БД
 DB_CONFIG = {
@@ -333,4 +390,5 @@ def history():
 
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=80)
+    threading.Thread(target=start_bot, daemon=True).start()
+    app.run(debug=True, host='0.0.0.0', port=80, use_reloader=False)
