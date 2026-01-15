@@ -3,7 +3,9 @@ import mysql.connector
 from mysql.connector import Error
 from datetime import datetime
 import functools
+import atexit
 import os
+import tempfile
 import threading
 
 import telebot
@@ -22,6 +24,8 @@ WELCOME_TEXT = (
 )
 FALLBACK_TEXT = "Пожалуйста, обратитесь в поддержку: https://t.me/MISS_uc_manager"
 BANNER_PATH = os.path.join(os.path.dirname(__file__), "banner.jpg")
+BOT_LOCK_PATH = os.path.join(tempfile.gettempdir(), "ucbot_telegram_bot.lock")
+_bot_lock_acquired = False
 
 
 def start_bot() -> None:
@@ -63,6 +67,60 @@ def start_bot() -> None:
         bot.send_message(message.chat.id, FALLBACK_TEXT)
 
     bot.infinity_polling()
+
+
+def _pid_is_running(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _release_bot_lock() -> None:
+    global _bot_lock_acquired
+    if not _bot_lock_acquired:
+        return
+    try:
+        os.unlink(BOT_LOCK_PATH)
+    except FileNotFoundError:
+        pass
+    _bot_lock_acquired = False
+
+
+def _try_acquire_bot_lock() -> bool:
+    global _bot_lock_acquired
+    try:
+        fd = os.open(BOT_LOCK_PATH, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        try:
+            with open(BOT_LOCK_PATH, "r", encoding="utf-8") as file:
+                pid = int(file.read().strip() or 0)
+        except (OSError, ValueError):
+            pid = 0
+
+        if _pid_is_running(pid):
+            return False
+
+        try:
+            os.unlink(BOT_LOCK_PATH)
+        except FileNotFoundError:
+            pass
+        return _try_acquire_bot_lock()
+
+    with os.fdopen(fd, "w", encoding="utf-8") as file:
+        file.write(str(os.getpid()))
+
+    _bot_lock_acquired = True
+    atexit.register(_release_bot_lock)
+    return True
+
+
+def _start_bot_thread() -> None:
+    if _try_acquire_bot_lock():
+        threading.Thread(target=start_bot, daemon=True).start()
 
 # Параметры подключения к БД
 DB_CONFIG = {
@@ -389,6 +447,8 @@ def history():
         connection.close()
 
 
+_start_bot_thread()
+
+
 if __name__ == '__main__':
-    threading.Thread(target=start_bot, daemon=True).start()
     app.run(debug=True, host='0.0.0.0', port=80, use_reloader=False)
