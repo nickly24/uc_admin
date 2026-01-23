@@ -1150,16 +1150,23 @@ def add_code():
             return redirect(url_for('add_code', table=table))
         
         try:
+            codes = [line.strip() for line in code.splitlines() if line.strip()]
+            if not codes:
+                flash('Не найдено ни одного кода для добавления', 'error')
+                return redirect(url_for('add_code', table=table))
+
             cursor = connection.cursor()
             query = f"INSERT INTO {table} (val, code) VALUES (%s, %s)"
-            cursor.execute(query, (val, code))
-            
+            inserted = 0
+            for item in codes:
+                cursor.execute(query, (val, item))
+                inserted += 1
+
             connection.commit()
-            code_id = cursor.lastrowid
             cursor.close()
-            
-            log_operation(f"Добавлен код ID {code_id} в таблицу {table}: {val} - {code}")
-            flash('Код успешно добавлен', 'success')
+
+            log_operation(f"Добавлено кодов: {inserted} в таблицу {table}: {val}")
+            flash(f'Успешно добавлено кодов: {inserted}', 'success')
             return redirect(url_for('codes', table=table))
         except Error as e:
             flash(f'Ошибка добавления кода: {e}', 'error')
