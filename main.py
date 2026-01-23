@@ -430,6 +430,38 @@ def get_current_user():
     return None
 
 
+def ensure_variant_exists(uc_value, order_type, price):
+    existing = db_fetch_one(
+        "SELECT id, uc_value, price FROM code_variants WHERE uc_value = %s AND purchase_type = %s",
+        (uc_value, order_type),
+    )
+    if existing:
+        return existing
+
+    connection = get_db_connection()
+    if not connection:
+        return None
+    try:
+        cursor = connection.cursor()
+        cursor.execute(
+            "INSERT INTO code_variants (uc_value, price, purchase_type, active) VALUES (%s, %s, %s, 1)",
+            (uc_value, price, order_type),
+        )
+        connection.commit()
+        variant_id = cursor.lastrowid
+        cursor.close()
+        return {"id": variant_id, "uc_value": uc_value, "price": price}
+    except Error as e:
+        logger.error(
+            "Ошибка создания варианта: %s",
+            e,
+            extra={"request_id": g.get("request_id", "-")},
+        )
+        return None
+    finally:
+        connection.close()
+
+
 def require_user():
     user = get_current_user()
     if not user:
@@ -476,6 +508,86 @@ def codeepay_request(path: str, payload: dict):
 
 
 api_bp = Blueprint("api", __name__, url_prefix="/api")
+
+
+def fulfill_order(order, payment_data=None):
+    connection = get_db_connection()
+    if not connection:
+        return False, "DB error"
+    try:
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute(
+            "SELECT oi.qty, cv.uc_value FROM order_items oi "
+            "JOIN code_variants cv ON cv.id = oi.variant_id "
+            "WHERE oi.order_id = %s",
+            (order["id"],),
+        )
+        items = cursor.fetchall()
+
+        for item in items:
+            val_label = f"{item['uc_value']} UC"
+            cursor.execute(
+                "SELECT id, code FROM codes WHERE val = %s LIMIT %s",
+                (val_label, item["qty"]),
+            )
+            codes = cursor.fetchall()
+            if len(codes) < item["qty"]:
+                cursor.execute(
+                    "UPDATE orders SET status = %s WHERE id = %s",
+                    ("failed", order["id"]),
+                )
+                connection.commit()
+                log_operation(
+                    f"Недостаточно кодов для заказа {order['id']} ({val_label})"
+                )
+                return False, "Not enough codes"
+
+            for code in codes:
+                if order["order_type"] == "code":
+                    cursor.execute(
+                        "INSERT INTO given_codes (val, code) VALUES (%s, %s)",
+                        (val_label, code["code"]),
+                    )
+                    cursor.execute(
+                        "INSERT INTO user_codes (order_id, code_id, code_value, code_text) VALUES (%s, %s, %s, %s)",
+                        (order["id"], code["id"], val_label, code["code"]),
+                    )
+                else:
+                    cursor.execute(
+                        "INSERT INTO used_codes (val, code) VALUES (%s, %s)",
+                        (val_label, code["code"]),
+                    )
+                    cursor.execute(
+                        "INSERT INTO auto_activations (order_id, player_id, status, activation_result) VALUES (%s, %s, %s, %s)",
+                        (
+                            order["id"],
+                            order.get("player_id"),
+                            "pending",
+                            code["code"],
+                        ),
+                    )
+
+                cursor.execute("DELETE FROM codes WHERE id = %s", (code["id"],))
+
+            log_operation(
+                f"Заказ {order['id']} оплачен, выдано кодов {item['qty']} ({val_label})"
+            )
+
+        cursor.execute(
+            "UPDATE orders SET status = %s WHERE id = %s",
+            ("paid", order["id"]),
+        )
+        connection.commit()
+        return True, "OK"
+    except Error as e:
+        logger.error(
+            "Ошибка выдачи кодов: %s",
+            e,
+            extra={"request_id": g.get("request_id", "-")},
+        )
+        return False, "Fulfillment error"
+    finally:
+        connection.close()
 
 
 @api_bp.route("/me", methods=["GET"])
@@ -580,6 +692,13 @@ def api_orders():
                 "WHERE uc_value = %s AND purchase_type = %s AND active = 1",
                 (uc_value, order_type),
             )
+            if not variant:
+                for fallback in DEFAULT_VARIANTS.get(order_type, []):
+                    if fallback["uc_value"] == uc_value:
+                        variant = ensure_variant_exists(
+                            fallback["uc_value"], order_type, fallback["price"]
+                        )
+                        break
 
         if not variant:
             return jsonify({"message": "Unknown variant"}), 400
@@ -633,6 +752,45 @@ def api_orders():
         return jsonify({"message": "Order create failed"}), 500
     finally:
         connection.close()
+
+
+@api_bp.route("/orders/confirm", methods=["POST"])
+def api_orders_confirm():
+    _, error = require_user()
+    if error:
+        return error
+
+    payload = request.get_json(silent=True) or {}
+    order_id = payload.get("order_id")
+    if not order_id:
+        return jsonify({"message": "order_id required"}), 400
+
+    order = db_fetch_one("SELECT * FROM orders WHERE id = %s", (order_id,))
+    if not order:
+        return jsonify({"message": "Order not found"}), 404
+
+    if order.get("status") == "paid":
+        ok, message = fulfill_order(order)
+        return jsonify({"message": message, "fulfilled": ok})
+
+    if not order.get("payment_order_id"):
+        return jsonify({"message": "Payment not initialized"}), 400
+
+    try:
+        payment_data = codeepay_request(
+            "/get_payment", {"order_id": order["payment_order_id"]}
+        )
+    except ValueError as e:
+        return jsonify({"message": "CodeePay error", "details": str(e)}), 502
+
+    paid = payment_data.get("payment_status") == "paid" or payment_data.get(
+        "payment_deposited"
+    )
+    if not paid:
+        return jsonify({"message": "Not paid yet"}), 200
+
+    ok, message = fulfill_order(order, payment_data)
+    return jsonify({"message": message, "fulfilled": ok})
 
 
 @api_bp.route("/payment/create", methods=["POST"])
@@ -766,101 +924,66 @@ def api_payment_callback():
 
     paid = payment_deposited or payment_status in {"paid", "success", "completed"}
 
-    connection = get_db_connection()
-    if not connection:
-        return jsonify({"message": "DB error"}), 500
-    try:
-        cursor = connection.cursor(dictionary=True)
-        if paid:
+    if paid:
+        connection = get_db_connection()
+        if not connection:
+            return jsonify({"message": "DB error"}), 500
+        try:
+            cursor = connection.cursor()
             cursor.execute(
                 "UPDATE orders SET status = %s, payment_id = %s, payment_method = %s WHERE id = %s",
                 ("paid", payment_id, payment_method, order["id"]),
             )
-
-            cursor.execute(
-                "SELECT oi.qty, cv.uc_value FROM order_items oi "
-                "JOIN code_variants cv ON cv.id = oi.variant_id "
-                "WHERE oi.order_id = %s",
-                (order["id"],),
-            )
-            items = cursor.fetchall()
-
-            for item in items:
-                val_label = f"{item['uc_value']} UC"
-                cursor.execute(
-                    "SELECT id, code FROM codes WHERE val = %s LIMIT %s",
-                    (val_label, item["qty"]),
-                )
-                codes = cursor.fetchall()
-                if len(codes) < item["qty"]:
-                    cursor.execute(
-                        "UPDATE orders SET status = %s WHERE id = %s",
-                        ("failed", order["id"]),
-                    )
-                    connection.commit()
-                    log_operation(
-                        f"Недостаточно кодов для заказа {order['id']} ({val_label})"
-                    )
-                    return jsonify({"message": "Not enough codes"}), 200
-
-                for code in codes:
-                    if order["order_type"] == "code":
-                        cursor.execute(
-                            "INSERT INTO given_codes (val, code) VALUES (%s, %s)",
-                            (val_label, code["code"]),
-                        )
-                        cursor.execute(
-                            "INSERT INTO user_codes (order_id, code_id, code_value, code_text) VALUES (%s, %s, %s, %s)",
-                            (order["id"], code["id"], val_label, code["code"]),
-                        )
-                    else:
-                        cursor.execute(
-                            "INSERT INTO used_codes (val, code) VALUES (%s, %s)",
-                            (val_label, code["code"]),
-                        )
-                        cursor.execute(
-                            "INSERT INTO auto_activations (order_id, player_id, status, activation_result) VALUES (%s, %s, %s, %s)",
-                            (
-                                order["id"],
-                                order.get("player_id"),
-                                "pending",
-                                code["code"],
-                            ),
-                        )
-
-                    cursor.execute("DELETE FROM codes WHERE id = %s", (code["id"],))
-
-                log_operation(
-                    f"Заказ {order['id']} оплачен, выдано кодов {item['qty']} ({val_label})"
-                )
-
             connection.commit()
+            cursor.close()
+        except Error as e:
+            logger.error(
+                "Ошибка обновления заказа: %s",
+                e,
+                extra={"request_id": g.get("request_id", "-")},
+            )
+        finally:
+            connection.close()
+
+        ok, message = fulfill_order(order, data)
+        if ok:
             logger.info(
-                "Order paid id=%s",
+                "Order fulfilled id=%s",
                 order["id"],
                 extra={"request_id": g.get("request_id", "-")},
             )
         else:
-            cursor.execute(
-                "UPDATE orders SET status = %s WHERE id = %s",
-                ("failed", order["id"]),
-            )
-            connection.commit()
-            logger.info(
-                "Order failed id=%s status=%s",
+            logger.warning(
+                "Order fulfill failed id=%s reason=%s",
                 order["id"],
-                payment_status,
+                message,
                 extra={"request_id": g.get("request_id", "-")},
             )
-        cursor.close()
-    except Error as e:
-        logger.error(
-            "Ошибка обработки платежа: %s",
-            e,
+    else:
+        connection = get_db_connection()
+        if connection:
+            try:
+                cursor = connection.cursor()
+                cursor.execute(
+                    "UPDATE orders SET status = %s WHERE id = %s",
+                    ("failed", order["id"]),
+                )
+                connection.commit()
+                cursor.close()
+            except Error as e:
+                logger.error(
+                    "Ошибка обновления заказа: %s",
+                    e,
+                    extra={"request_id": g.get("request_id", "-")},
+                )
+            finally:
+                connection.close()
+        logger.info(
+            "Order failed id=%s status=%s",
+            order["id"],
+            payment_status,
             extra={"request_id": g.get("request_id", "-")},
         )
-    finally:
-        connection.close()
 
     return jsonify({"message": "OK"}), 200
 
