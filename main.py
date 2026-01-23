@@ -71,6 +71,9 @@ BOT_LOCK_PATH = os.path.join(tempfile.gettempdir(), "ucbot_telegram_bot.lock")
 _bot_lock_acquired = False
 
 REDACT_KEYS = {"token", "password", "api_key", "code", "code_text", "init_data"}
+CORS_ALLOW_ORIGIN = os.getenv("CORS_ALLOW_ORIGIN", "*")
+CORS_ALLOW_HEADERS = "Content-Type, X-Api-Key, X-Telegram-Init-Data"
+CORS_ALLOW_METHODS = "GET, POST, OPTIONS"
 
 
 def redact_payload(payload):
@@ -215,6 +218,25 @@ def log_request_end(response):
         extra={"request_id": g.get("request_id", "-")},
     )
     return response
+
+
+@app.after_request
+def add_cors_headers(response):
+    if request.path.startswith("/api"):
+        response.headers["Access-Control-Allow-Origin"] = CORS_ALLOW_ORIGIN
+        response.headers["Access-Control-Allow-Headers"] = CORS_ALLOW_HEADERS
+        response.headers["Access-Control-Allow-Methods"] = CORS_ALLOW_METHODS
+    return response
+
+
+@app.before_request
+def handle_preflight():
+    if request.path.startswith("/api") and request.method == "OPTIONS":
+        response = app.make_response(("", 204))
+        response.headers["Access-Control-Allow-Origin"] = CORS_ALLOW_ORIGIN
+        response.headers["Access-Control-Allow-Headers"] = CORS_ALLOW_HEADERS
+        response.headers["Access-Control-Allow-Methods"] = CORS_ALLOW_METHODS
+        return response
 
 # Параметры подключения к БД
 DB_CONFIG = {
@@ -858,6 +880,15 @@ def api_my_codes():
         for row in rows
     ]
     return jsonify({"items": items})
+
+
+@api_bp.route("/<path:subpath>", methods=["OPTIONS"])
+def api_options(subpath):
+    response = app.make_response(("", 204))
+    response.headers["Access-Control-Allow-Origin"] = CORS_ALLOW_ORIGIN
+    response.headers["Access-Control-Allow-Headers"] = CORS_ALLOW_HEADERS
+    response.headers["Access-Control-Allow-Methods"] = CORS_ALLOW_METHODS
+    return response
 
 
 def log_operation(text):
