@@ -516,6 +516,15 @@ def fulfill_order(order, payment_data=None):
         return False, "DB error"
     try:
         cursor = connection.cursor(dictionary=True)
+        
+        # Получаем информацию о пользователе
+        user_info = None
+        if order.get("user_id"):
+            user_info = db_fetch_one(
+                "SELECT id, telegram_id, username FROM users WHERE id = %s",
+                (order["user_id"],),
+            )
+        
         cursor.execute(
             "SELECT oi.qty, cv.uc_value FROM order_items oi "
             "JOIN code_variants cv ON cv.id = oi.variant_id "
@@ -537,12 +546,17 @@ def fulfill_order(order, payment_data=None):
                     ("failed", order["id"]),
                 )
                 connection.commit()
+                user_str = ""
+                if user_info:
+                    user_str = f" | Пользователь: ID={user_info.get('id')}, Telegram={user_info.get('telegram_id')}, Username={user_info.get('username')}"
                 log_operation(
-                    f"Недостаточно кодов для заказа {order['id']} ({val_label})"
+                    f"Недостаточно кодов для заказа {order['id']} ({val_label}) | Тип: {order.get('order_type')} | Сумма: {order.get('amount')}₽{user_str}"
                 )
                 return False, "Not enough codes"
 
+            codes_list = []
             for code in codes:
+                codes_list.append(f"ID={code['id']}, Код={code['code']}")
                 if order["order_type"] == "code":
                     cursor.execute(
                         "INSERT INTO given_codes (val, code) VALUES (%s, %s)",
@@ -569,8 +583,25 @@ def fulfill_order(order, payment_data=None):
 
                 cursor.execute("DELETE FROM codes WHERE id = %s", (code["id"],))
 
+            # Детальное логирование
+            user_str = ""
+            if user_info:
+                user_str = f" | Пользователь: ID={user_info.get('id')}, Telegram_ID={user_info.get('telegram_id')}, Username={user_info.get('username') or 'N/A'}"
+            
+            player_str = ""
+            if order.get("player_id"):
+                player_str = f" | Player_ID={order.get('player_id')}"
+            
+            payment_str = ""
+            if order.get("payment_id"):
+                payment_str = f" | Payment_ID={order.get('payment_id')}"
+            if order.get("payment_method"):
+                payment_str += f", Метод={order.get('payment_method')}"
+            
+            codes_detail = " | Коды: " + "; ".join(codes_list)
+            
             log_operation(
-                f"Заказ {order['id']} оплачен, выдано кодов {item['qty']} ({val_label})"
+                f"Заказ {order['id']} оплачен | Тип: {order.get('order_type')} | Выдано кодов: {item['qty']} ({val_label}) | Сумма: {order.get('amount')}₽{user_str}{player_str}{payment_str}{codes_detail}"
             )
 
         cursor.execute(
