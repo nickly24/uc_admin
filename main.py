@@ -646,11 +646,20 @@ def api_variants():
     if purchase_type not in {"code", "auto"}:
         return jsonify({"message": "Unknown type"}), 400
 
+    # Всегда берем из БД code_variants
     rows = db_fetch_all(
-        "SELECT id, uc_value, price FROM code_variants WHERE purchase_type = %s AND active = 1",
+        "SELECT id, uc_value, price FROM code_variants WHERE purchase_type = %s AND active = 1 ORDER BY uc_value ASC",
         (purchase_type,),
     )
+    logger.info(
+        "api_variants: type=%s, found_rows=%s, rows=%s",
+        purchase_type,
+        len(rows) if rows else 0,
+        rows if rows else [],
+        extra={"request_id": g.get("request_id", "-")},
+    )
     if not rows:
+        # Fallback на дефолтные только если в БД нет данных
         items = DEFAULT_VARIANTS.get(purchase_type, [])
         logger.info(
             "Variants fallback type=%s count=%s",
@@ -667,14 +676,16 @@ def api_variants():
             }
         )
 
-    return jsonify(
-        {
-            "items": [
-                {"id": row["id"], "value": row["uc_value"], "price": float(row["price"])}
-                for row in rows
-            ]
-        }
+    result_items = [
+        {"id": row["id"], "value": row["uc_value"], "price": float(row["price"])}
+        for row in rows
+    ]
+    logger.info(
+        "api_variants: returning items count=%s",
+        len(result_items),
+        extra={"request_id": g.get("request_id", "-")},
     )
+    return jsonify({"items": result_items})
 
 
 @api_bp.route("/orders", methods=["POST"])
