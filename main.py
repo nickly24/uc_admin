@@ -1012,6 +1012,28 @@ def api_my_codes():
     return jsonify({"items": items})
 
 
+@api_bp.route("/availability", methods=["POST"])
+def api_availability():
+    _, error = require_user()
+    if error:
+        return error
+
+    payload = request.get_json(silent=True) or {}
+    uc_value = payload.get("uc_value")
+    qty = int(payload.get("qty", 0))
+    if not uc_value or qty <= 0:
+        return jsonify({"message": "Invalid request"}), 400
+
+    val_label = f"{int(uc_value)} UC"
+    row = db_fetch_one(
+        "SELECT COUNT(*) AS total FROM codes WHERE val = %s",
+        (val_label,),
+    )
+    total = int(row["total"]) if row else 0
+    available = total >= qty
+    return jsonify({"available": available, "available_count": total})
+
+
 @api_bp.route("/<path:subpath>", methods=["OPTIONS"])
 def api_options(subpath):
     response = app.make_response(("", 204))
